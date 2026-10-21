@@ -2798,6 +2798,8 @@ class CanvasModel with ChangeNotifier {
     _timerMobileFocusCanvasCursor?.cancel();
     _timerMobileFocusCanvasCursor =
         Timer(Duration(milliseconds: 100), () async {
+      // The user may have locked the canvas during the delay.
+      if (locked) return;
       updateSize();
       _resetCanvasOffset(getDisplayWidth(), getDisplayHeight());
       notifyListeners();
@@ -2819,6 +2821,8 @@ class CanvasModel with ChangeNotifier {
       return;
     }
     _timerMobileRestoreCanvasOffset = Timer(Duration(milliseconds: 100), () {
+      // The user may have locked the canvas during the delay.
+      if (locked) return;
       updateSize();
       _x = targetOffset.dx;
       _y = targetOffset.dy;
@@ -3163,12 +3167,16 @@ class CursorModel with ChangeNotifier {
       _lastIsBlocked = true;
     }
     if (isMobile && _lastKeyboardIsVisible != keyboardIsVisible) {
-      if (keyboardIsVisible) {
-        parent.target?.canvasModel.saveMobileOffsetBeforeSoftKeyboard();
-        parent.target?.canvasModel.mobileFocusCanvasCursor();
-        parent.target?.canvasModel.isMobileCanvasChanged = false;
-      } else {
-        parent.target?.canvasModel.restoreMobileOffsetAfterSoftKeyboard();
+      final canvas = parent.target?.canvasModel;
+      // A locked canvas must not be re-centred when the soft keyboard opens.
+      if (canvas?.locked != true) {
+        if (keyboardIsVisible) {
+          canvas?.saveMobileOffsetBeforeSoftKeyboard();
+          canvas?.mobileFocusCanvasCursor();
+          canvas?.isMobileCanvasChanged = false;
+        } else {
+          canvas?.restoreMobileOffsetAfterSoftKeyboard();
+        }
       }
     }
     _lastKeyboardIsVisible = keyboardIsVisible;
@@ -3372,13 +3380,16 @@ class CursorModel with ChangeNotifier {
     final r = getVisibleRect();
     var cx = r.center.dx;
     var cy = r.center.dy;
+    // A locked canvas must not move: clamp the cursor to the visible area instead
+    // of panning the canvas to follow it.
+    final canvasLocked = parent.target?.canvasModel.locked ?? false;
     var tryMoveCanvasX = false;
     final displayRect = parent.target?.ffiModel.rect;
     if (dx > 0) {
       final maxCanvasCanMove = _displayOriginX +
           (displayRect?.width ?? 1280) -
           r.right.roundToDouble();
-      tryMoveCanvasX = _x + dx > cx && maxCanvasCanMove > 0;
+      tryMoveCanvasX = !canvasLocked && _x + dx > cx && maxCanvasCanMove > 0;
       if (tryMoveCanvasX) {
         dx = min(dx, maxCanvasCanMove);
       } else {
@@ -3387,7 +3398,7 @@ class CursorModel with ChangeNotifier {
       }
     } else if (dx < 0) {
       final maxCanvasCanMove = _displayOriginX - r.left.roundToDouble();
-      tryMoveCanvasX = _x + dx < cx && maxCanvasCanMove < 0;
+      tryMoveCanvasX = !canvasLocked && _x + dx < cx && maxCanvasCanMove < 0;
       if (tryMoveCanvasX) {
         dx = max(dx, maxCanvasCanMove);
       } else {
@@ -3400,7 +3411,7 @@ class CursorModel with ChangeNotifier {
       final mayCanvasCanMove = _displayOriginY +
           (displayRect?.height ?? 720) -
           r.bottom.roundToDouble();
-      tryMoveCanvasY = _y + dy > cy && mayCanvasCanMove > 0;
+      tryMoveCanvasY = !canvasLocked && _y + dy > cy && mayCanvasCanMove > 0;
       if (tryMoveCanvasY) {
         dy = min(dy, mayCanvasCanMove);
       } else {
@@ -3409,7 +3420,7 @@ class CursorModel with ChangeNotifier {
       }
     } else if (dy < 0) {
       final mayCanvasCanMove = _displayOriginY - r.top.roundToDouble();
-      tryMoveCanvasY = _y + dy < cy && mayCanvasCanMove < 0;
+      tryMoveCanvasY = !canvasLocked && _y + dy < cy && mayCanvasCanMove < 0;
       if (tryMoveCanvasY) {
         dy = max(dy, mayCanvasCanMove);
       } else {
