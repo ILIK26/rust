@@ -253,6 +253,7 @@ class MainActivity : FlutterActivity() {
         // which must not tear down a live session.
         if (isFinishing) {
             FFI.closeAllSessions()
+            OutgoingConnectionService.stop(this)
         }
         mainService?.let {
             unbindService(serviceConnection)
@@ -657,6 +658,12 @@ class MainActivity : FlutterActivity() {
                 }
                 "on_voice_call_closed" -> {
                     onVoiceCallClosed()
+                }
+                "start_outgoing_foreground" -> {
+                    result.success(OutgoingConnectionService.start(this))
+                }
+                "stop_outgoing_foreground" -> {
+                    result.success(OutgoingConnectionService.stop(this))
                 }
                 else -> {
                     result.error("-1", "No such method", null)

@@ -39,6 +39,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:vector_math/vector_math.dart' show Vector2;
 
 import '../common.dart';
+import '../mobile/outgoing_connection.dart';
 import '../utils/image.dart' as img;
 import '../common/widgets/dialog.dart';
 import 'input_model.dart';
@@ -893,6 +894,12 @@ class FfiModel with ChangeNotifier {
     final text = evt['text'];
     final link = evt['link'];
 
+    // The peer has dropped the socket. The page stays up behind the dialog, so
+    // the foreground hold must not wait for FFI.close().
+    if (title == 'Connection Error') {
+      parent.target!._releaseOutgoingForeground();
+    }
+
     // The peer-gone detector reconnects under `restarting-show` rather than an error title, so
     // it needs naming here too. By its own title, not the type: an explicitly restarted remote
     // device reaches the same type from a path this change does not touch.
@@ -1115,6 +1122,7 @@ class FfiModel with ChangeNotifier {
 
   void reconnect(OverlayDialogManager dialogManager, SessionID sessionId,
       bool forceRelay) {
+    parent.target?._holdOutgoingForeground();
     // Disable relative mouse mode before reconnecting to ensure cursor is released.
     parent.target?.inputModel.setRelativeMouseMode(false);
     _cancelPendingMonitorRestore();
@@ -4032,6 +4040,7 @@ class FFI {
   var version = '';
   var connType = ConnType.defaultConn;
   var closed = false;
+  final _outgoingHold = OutgoingConnectionHold();
 
   /// dialogManager use late to ensure init after main page binding [globalKey]
   late final dialogManager = OverlayDialogManager();
@@ -4125,6 +4134,7 @@ class FFI {
     List<int>? displays,
   }) {
     closed = false;
+    _holdOutgoingForeground();
     if (isMobile) mobileReset();
     assert(
         (!(isPortForward && isViewCamera)) &&
@@ -4371,9 +4381,28 @@ class FFI {
         sessionId: sessionId, code: code, trustThisDevice: trustThisDevice);
   }
 
+  void _holdOutgoingForeground() {
+    if (!isAndroid) return;
+    unawaited(_outgoingHold.apply(true, _invokeOutgoingForeground));
+  }
+
+  void _releaseOutgoingForeground() {
+    if (!isAndroid) return;
+    unawaited(_outgoingHold.apply(false, _invokeOutgoingForeground));
+  }
+
+  Future<bool> _invokeOutgoingForeground(String method) async {
+    try {
+      return await invokeMethod(method) == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Close the remote session.
   Future<void> close({bool closeSession = true}) async {
     closed = true;
+    _releaseOutgoingForeground();
     if (isWeb) {
       platformFFI.clearVideoFrameCallback();
     }
