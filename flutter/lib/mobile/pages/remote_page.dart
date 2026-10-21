@@ -497,9 +497,13 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         return false;
       },
       child: Scaffold(
+          // Let the soft keyboard float over the canvas instead of shrinking it,
+          // so the remote image (and a locked canvas) does not move.
+          resizeToAvoidBottomInset: false,
           // workaround for https://github.com/rustdesk/rustdesk/issues/3131
           floatingActionButtonLocation: keyboardIsVisible
-              ? FABLocation(FloatingActionButtonLocation.endFloat, 0, -35)
+              ? FABLocation(FloatingActionButtonLocation.endFloat, 0,
+                  -MediaQuery.of(context).viewInsets.bottom)
               : null,
           floatingActionButton: !showActionButton
               ? null
@@ -714,14 +718,23 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               right: 10,
               child: QualityMonitor(gFFI.qualityMonitorModel),
             ),
-            Obx(() {
-              final chatKeyboardRequested =
-                  gFFI.chatModel.softKeyboardRequested.value;
-              return KeyHelpTools(
-                  keyboardIsVisible: keyboardVisibilityController.isVisible &&
-                      (_showEdit || chatKeyboardRequested),
-                  showGestureHelp: _showGestureHelp);
-            }),
+            Positioned(
+              left: 0,
+              top: 0,
+              bottom: 0,
+              child: SizedBox(
+                width: 118,
+                child: Obx(() {
+                  final chatKeyboardRequested =
+                      gFFI.chatModel.softKeyboardRequested.value;
+                  return KeyHelpTools(
+                      keyboardIsVisible:
+                          keyboardVisibilityController.isVisible &&
+                              (_showEdit || chatKeyboardRequested),
+                      showGestureHelp: _showGestureHelp);
+                }),
+              ),
+            ),
             SizedBox(
               width: 0,
               height: 0,
@@ -1099,9 +1112,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
               ),
           active: _more),
     ];
-    final fn = <Widget>[
-      SizedBox(width: 9999),
-    ];
+    final fn = <Widget>[];
     for (var i = 1; i <= 12; ++i) {
       final name = 'F$i';
       fn.add(wrap(name, () {
@@ -1109,7 +1120,6 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
       }));
     }
     final more = <Widget>[
-      SizedBox(width: 9999),
       wrap('Esc', () {
         inputModel.inputKey('VK_ESCAPE');
       }),
@@ -1156,7 +1166,6 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
       wrap('Enter', () {
         inputModel.inputKey('VK_ENTER');
       }),
-      SizedBox(width: 9999),
       wrap('', () {
         inputModel.inputKey('VK_LEFT');
       }, icon: Icons.keyboard_arrow_left),
@@ -1180,6 +1189,20 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
       }),
     ];
     final space = size.width > 320 ? 4.0 : 2.0;
+    final items = <Widget>[
+      ...modifiers,
+      ...keys,
+      if (_fn) ...fn,
+      if (_more) ...more,
+    ];
+    final rows = <Widget>[];
+    for (var i = 0; i < items.length; i += 2) {
+      rows.add(Row(mainAxisSize: MainAxisSize.min, children: [
+        items[i],
+        if (i + 1 < items.length) SizedBox(width: space),
+        if (i + 1 < items.length) items[i + 1],
+      ]));
+    }
     // 500 ms is long enough for this widget to be built!
     Future.delayed(Duration(milliseconds: 500), () {
       _updateRect();
@@ -1189,14 +1212,17 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
         color: Color(0xAA000000),
         padding: EdgeInsets.only(
             top: _keyboardVisibilityController.isVisible ? 24 : 4, bottom: 8),
-        child: Wrap(
-          spacing: space,
-          runSpacing: space,
-          children: <Widget>[SizedBox(width: 9999)] +
-              modifiers +
-              keys +
-              (_fn ? fn : []) +
-              (_more ? more : []),
+        child: SingleChildScrollView(
+          padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).viewInsets.bottom),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final row in rows)
+                FittedBox(fit: BoxFit.scaleDown, child: row),
+            ],
+          ),
         ));
   }
 }
