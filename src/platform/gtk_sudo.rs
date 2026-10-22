@@ -536,8 +536,8 @@ fn child(su_user: Option<String>, args: Vec<String>) -> ResultType<()> {
 }
 
 fn get_echo_turn_off(fd: RawFd) -> Result<bool, Error> {
-    let tios = termios::Termios::from_fd(fd)?;
     for _ in 0..10 {
+        let tios = termios::Termios::from_fd(fd)?;
         if tios.c_lflag & termios::ECHO == 0 {
             return Ok(true);
         }
