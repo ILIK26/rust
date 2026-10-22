@@ -10,6 +10,7 @@ import 'package:toggle_switch/toggle_switch.dart';
 import '../../common.dart';
 import '../../common/widgets/dialog.dart';
 import '../../consts.dart';
+import '../../utils/android_documents.dart';
 
 class FileManagerPage extends StatefulWidget {
   FileManagerPage(
@@ -142,6 +143,52 @@ class _FileManagerPageState extends State<FileManagerPage> {
     }
   }
 
+  Future<bool> _selectFolder() async {
+    try {
+      final selected = await AndroidDocuments.selectFolder();
+      if (selected == null || !mounted) return false;
+      final path = selected['path'] as String;
+      final previousHome = model.localController.homePath;
+      model.localController.homePath = path;
+      try {
+        final opened =
+            await model.localController.openDirectory(path, isBack: true);
+        if (opened) {
+          model.localController.history.clear();
+        } else {
+          model.localController.homePath = previousHome;
+        }
+        return opened;
+      } catch (_) {
+        model.localController.homePath = previousHome;
+        rethrow;
+      }
+    } catch (error) {
+      showToast(error.toString());
+      return false;
+    }
+  }
+
+  Future<void> _browseWorkspace() async {
+    try {
+      final path = await AndroidDocuments.workspace();
+      final previousHome = model.localController.homePath;
+      model.localController.homePath = path;
+      try {
+        if (await model.localController.openDirectory(path, isBack: true)) {
+          model.localController.history.clear();
+        } else {
+          model.localController.homePath = previousHome;
+        }
+      } catch (_) {
+        model.localController.homePath = previousHome;
+        rethrow;
+      }
+    } catch (error) {
+      showToast(error.toString());
+    }
+  }
+
   Future<void> _exportFile(Entry entry) async {
     try {
       final exported = await _runAndroidDocumentPicker(() => gFFI
@@ -206,9 +253,11 @@ class _FileManagerPageState extends State<FileManagerPage> {
   }
 
   Future<void> _exportLogs() async {
-    final home = currentFileController.homePath;
-    if (home.isEmpty) {
-      showToast(translate('Failed'));
+    final String home;
+    try {
+      home = await AndroidDocuments.workspace();
+    } catch (error) {
+      showToast(error.toString());
       return;
     }
     final appDir = PathUtil.join(home, appName, false);
@@ -317,6 +366,31 @@ class _FileManagerPageState extends State<FileManagerPage> {
                 icon: Icon(Icons.more_vert),
                 itemBuilder: (context) {
                   return [
+                    if (isAndroid && showLocal) ...[
+                      PopupMenuItem(
+                        value: 'workspace',
+                        child: Row(
+                          children: [
+                            Icon(Icons.storage_outlined,
+                                color: Theme.of(context).iconTheme.color),
+                            SizedBox(width: 5),
+                            Text(translate('RustDesk storage')),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'choose_folder',
+                        child: Row(
+                          children: [
+                            Icon(Icons.folder_open_outlined,
+                                color: Theme.of(context).iconTheme.color),
+                            SizedBox(width: 5),
+                            Text('${translate('Other folders')}…'),
+                          ],
+                        ),
+                      ),
+                      const PopupMenuDivider(),
+                    ],
                     PopupMenuItem(
                       child: Row(
                         children: [
@@ -328,7 +402,7 @@ class _FileManagerPageState extends State<FileManagerPage> {
                       ),
                       value: "refresh",
                     ),
-                    if (isAndroid)
+                    if (isAndroid && !AndroidDocuments.isPath(currentDir.path))
                       PopupMenuItem(
                         enabled: showLocal && currentDir.path.isNotEmpty,
                         value: "import",
@@ -341,7 +415,7 @@ class _FileManagerPageState extends State<FileManagerPage> {
                           ],
                         ),
                       ),
-                    if (isAndroid)
+                    if (isAndroid && !AndroidDocuments.isPath(currentDir.path))
                       PopupMenuItem(
                         enabled: showLocal && currentDir.path.isNotEmpty,
                         value: "import_folder",
@@ -409,7 +483,11 @@ class _FileManagerPageState extends State<FileManagerPage> {
                   ];
                 },
                 onSelected: (v) {
-                  if (v == "refresh") {
+                  if (v == 'workspace') {
+                    _browseWorkspace();
+                  } else if (v == 'choose_folder') {
+                    _selectFolder();
+                  } else if (v == "refresh") {
                     currentFileController.refresh();
                   } else if (v == "import") {
                     _importFiles();
@@ -515,6 +593,7 @@ class _FileManagerPageState extends State<FileManagerPage> {
               },
               actions: [
                 if (isAndroid &&
+                    !AndroidDocuments.isPath(currentDir.path) &&
                     selectedItems?.isLocal == true &&
                     selectedItems?.items.isNotEmpty == true) ...[
                   if (selectedItems!.items.length == 1 &&
@@ -900,7 +979,7 @@ class _FileManagerViewState extends State<FileManagerView> {
             Padding(
               padding: EdgeInsets.fromLTRB(30, 5, 30, 0),
               child: Text(
-                controller.directory.value.path,
+                AndroidDocuments.displayPath(controller.directory.value.path),
                 style: TextStyle(color: MyTheme.darkGray),
               ),
             ),
