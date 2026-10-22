@@ -356,7 +356,8 @@ fn ui_parent(
                 let last_line = buf.lines().last().unwrap_or(&buf).trim().to_string();
                 log::info!("read from child: {}", buf);
 
-                if last_line.ends_with(":") {
+                // A translated prompt may end with a full-width colon, e.g. zh_CN in su mode.
+                if last_line.ends_with([':', '：']) {
                     match get_echo_turn_off(raw_fd) {
                         Ok(true) => {
                             log::debug!("get_echo_turn_off ok");
