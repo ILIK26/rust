@@ -3502,6 +3502,16 @@ impl LoginConfigHandler {
         }
     }
 
+    /// Sets a toggle that is otherwise stored in the peer config on disk. Used
+    /// by tests that need a preference such as the Control/Command swap.
+    #[cfg(test)]
+    pub fn set_toggle_option_for_test(&mut self, name: &str, value: bool) {
+        match name {
+            "allow_swap_key" => self.config.allow_swap_key.v = value,
+            _ => unimplemented!("no test hook for {name}"),
+        }
+    }
+
     pub fn is_privacy_mode_supported(&self) -> bool {
         if let Some(features) = &self.features {
             features.privacy_mode
@@ -4423,7 +4433,7 @@ pub fn input_os_password(p: String, activate: bool, interface: impl Interface) {
 /// * `p` - The password.
 /// * `activate` - Whether to activate OS.
 /// * `interface` - The interface for sending data.
-fn _input_os_password(p: String, activate: bool, interface: impl Interface) {
+pub(crate) fn _input_os_password(p: String, activate: bool, interface: impl Interface) {
     let input_password = !p.is_empty();
     if activate {
         // Click event is used to bring up the password input box.
