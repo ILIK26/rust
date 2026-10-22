@@ -351,13 +351,7 @@ fn ui_parent(
                 let last_line = buf.lines().last().unwrap_or(&buf).trim().to_string();
                 log::info!("read from child: {}", buf);
 
-                if last_line.starts_with("sudo:") || last_line.starts_with("su:") {
-                    if let Err(e) = tx_to_ui.send(Message::ErrorDialog(last_line)) {
-                        log::error!("Channel error: {e:?}");
-                        kill_child(child);
-                    }
-                    break;
-                } else if last_line.ends_with(":") {
+                if last_line.ends_with(":") {
                     match get_echo_turn_off(raw_fd) {
                         Ok(true) => {
                             log::debug!("get_echo_turn_off ok");
