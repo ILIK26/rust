@@ -19,6 +19,7 @@ import '../../common/widgets/overlay.dart';
 import '../../common/widgets/dialog.dart';
 import '../../common/widgets/remote_input.dart';
 import '../../models/input_model.dart';
+import '../../models/mobile_text_input_utils.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
 import '../../models/shortcut_model.dart';
@@ -108,8 +109,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   InputModel get inputModel => gFFI.inputModel;
   SessionID get sessionId => gFFI.sessionId;
 
+  bool get _hasToolbarModifierOn =>
+      inputModel.ctrl ||
+      inputModel.alt ||
+      inputModel.shift ||
+      inputModel.command;
+
   final TextEditingController _textController =
       TextEditingController(text: initText);
+  Future<void> _handwritingSend = Future<void>.value();
 
   _RemotePageState(String id) {
     initSharedStates(id);
@@ -179,10 +187,54 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     if (gFFI.ffiModel.pi.isSet.value) {
       _initWaylandKeyboardGateIfNeeded();
     }
+    _bindHandwritingChannel();
+  }
+
+  Future<void> _setRemoteHandwritingActive(bool active) {
+    if (!isIOS) return Future.value();
+    return const MethodChannel('org.rustdesk.rustdesk/handwriting')
+        .invokeMethod<void>(active ? 'arm' : 'disarm');
+  }
+
+  void _bindHandwritingChannel() {
+    if (!isIOS) return;
+    const channel = MethodChannel('org.rustdesk.rustdesk/handwriting');
+    channel.setMethodCallHandler((call) async {
+      if (!mounted) return 'unmounted';
+      if (!_showEdit) return 'hidden';
+      if (!inputModel.keyboardInputAllowed) return 'blocked';
+      if (gFFI.chatModel.inputNode.hasFocus) return 'chat';
+      if (call.method != 'edit') return 'unknown';
+      final args = call.arguments is Map ? call.arguments as Map : const {};
+      final removed = (args['removed'] as num?)?.toInt() ?? 0;
+      final text = args['text'] is String ? args['text'] as String : '';
+      _handwritingSend = _handwritingSend.then((_) async {
+        try {
+          if (!mounted || !inputModel.keyboardInputAllowed) return;
+          final times = removed < 0 ? 0 : (removed > 32 ? 32 : removed);
+          for (var i = 0; i < times; i++) {
+            inputModel.inputKey('VK_BACK');
+          }
+          if (text == '\n') {
+            inputModel.inputKey('VK_RETURN');
+          } else if (text == ' ') {
+            inputModel.inputKey('VK_SPACE');
+          } else if (text.isNotEmpty) {
+            await bind.sessionInputString(sessionId: sessionId, value: text);
+          }
+        } catch (_) {}
+      });
+      return 'ok';
+    });
   }
 
   @override
   Future<void> dispose() async {
+    if (isIOS) {
+      await _setRemoteHandwritingActive(false);
+      const MethodChannel('org.rustdesk.rustdesk/handwriting')
+          .setMethodCallHandler(null);
+    }
     HardwareKeyboard.instance.removeHandler(_handleLocalKeyEvent);
     WidgetsBinding.instance.removeObserver(this);
     // Close the session up-front. `gFFI.close()` below only calls `sessionClose`
@@ -261,6 +313,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
     // Ensure soft keyboard is not active before user confirms.
     _showEdit = false;
+    unawaited(_setRemoteHandwritingActive(false));
     gFFI.invokeMethod("enable_soft_keyboard", false);
     _mobileFocusNode.unfocus();
     _physicalFocusNode.requestFocus();
@@ -307,9 +360,13 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       _iosKeyboardWorkaroundTimer?.cancel();
       _iosKeyboardWorkaroundTimer = null;
       _timer?.cancel();
-      _timer = Timer(kMobileDelaySoftKeyboardFocus, () {
+      _timer = Timer(kMobileDelaySoftKeyboardFocus, () async {
         SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
             overlays: SystemUiOverlay.values);
+        if (_showEdit) {
+          await _setRemoteHandwritingActive(true);
+        }
+        if (!mounted) return;
         _mobileFocusNode.requestFocus();
       });
     }
@@ -318,52 +375,25 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   }
 
   void _handleIOSSoftKeyboardInput(String newValue) {
-    var oldValue = _value;
-    _value = newValue;
-    var i = newValue.length - 1;
-    for (; i >= 0 && newValue[i] != '1'; --i) {}
-    var j = oldValue.length - 1;
-    for (; j >= 0 && oldValue[j] != '1'; --j) {}
-    if (i < j) j = i;
-    var subNewValue = newValue.substring(j + 1);
-    var subOldValue = oldValue.substring(j + 1);
-
-    // get common prefix of subNewValue and subOldValue
-    var common = 0;
-    for (;
-        common < subOldValue.length &&
-            common < subNewValue.length &&
-            subNewValue[common] == subOldValue[common];
-        ++common) {}
-
-    // get newStr from subNewValue
-    var newStr = "";
-    if (subNewValue.length > common) {
-      newStr = subNewValue.substring(common);
-    }
-
-    // Set the value to the old value and early return if is still composing. (1 && 2)
-    // 1. The composing range is valid
-    // 2. The new string is shorter than the composing range.
-    if (_textController.value.isComposingRangeValid) {
-      final composingLength = _textController.value.composing.end -
-          _textController.value.composing.start;
-      if (composingLength > newStr.length) {
-        _value = oldValue;
-        return;
+    final update = diffMobileSoftKeyboard(
+      trackedText: _value,
+      currentText: newValue,
+      composing: _textController.value.composing,
+      hasModifierOn: _hasToolbarModifierOn,
+    );
+    _value = update.trackedText;
+    for (final action in update.actions) {
+      switch (action.type) {
+        case MobileSoftKeyboardActionType.backspace:
+          inputModel.inputKey('VK_BACK');
+          break;
+        case MobileSoftKeyboardActionType.text:
+          bind.sessionInputString(sessionId: sessionId, value: action.value);
+          break;
+        case MobileSoftKeyboardActionType.key:
+          inputChar(action.value);
+          break;
       }
-    }
-
-    // Delete the different part in the old value.
-    for (i = 0; i < subOldValue.length - common; ++i) {
-      inputModel.inputKey('VK_BACK');
-    }
-
-    // Input the new string.
-    if (newStr.length > 1) {
-      bind.sessionInputString(sessionId: sessionId, value: newStr);
-    } else {
-      inputChar(newStr);
     }
   }
 
@@ -405,6 +435,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
           _openKeyboardUnlocked();
           return;
         }
+        bind.sessionInputString(sessionId: sessionId, value: content);
+      } else if (mobileSoftKeyboardCommitUsesSeq(content,
+          hasModifierOn: _hasToolbarModifierOn)) {
+        // Single committed character, typical for CJK IMEs.
         bind.sessionInputString(sessionId: sessionId, value: content);
       } else {
         inputChar(content);
@@ -471,9 +505,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       // make sure edit ready, so that keyboard won't show/hide/show/hide happen
       setState(() => _showEdit = true);
       _timer?.cancel();
-      _timer = Timer(kMobileDelaySoftKeyboardFocus, () {
+      _timer = Timer(kMobileDelaySoftKeyboardFocus, () async {
         SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
             overlays: SystemUiOverlay.values);
+        await _setRemoteHandwritingActive(true);
+        if (!mounted) return;
         _mobileFocusNode.requestFocus();
       });
     });
@@ -512,20 +548,23 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                     color: Colors.white,
                   ),
                   backgroundColor: MyTheme.accent,
-                  onPressed: () {
-                    setState(() {
-                      if (keyboardIsVisible) {
+                  onPressed: () async {
+                    if (keyboardIsVisible) {
+                      await _setRemoteHandwritingActive(false);
+                      if (!mounted) return;
+                      setState(() {
                         _showEdit = false;
                         gFFI.invokeMethod("enable_soft_keyboard", false);
                         _mobileFocusNode.unfocus();
                         _physicalFocusNode.requestFocus();
-                      } else if (_showGestureHelp) {
-                        _showGestureHelp = false;
-                      } else {
-                        _showBar = !_showBar;
-                      }
-                    });
-                  }),
+                      });
+                    } else if (_showGestureHelp) {
+                      setState(() => _showGestureHelp = false);
+                    } else {
+                      setState(() => _showBar = !_showBar);
+                    }
+                  },
+                ),
           bottomNavigationBar: Obx(() => Stack(
                 alignment: Alignment.bottomCenter,
                 children: [
@@ -620,7 +659,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                     IconButton(
                       color: Colors.white,
                       icon: Icon(Icons.tv),
-                      onPressed: () {
+                      onPressed: () async {
+                        await _setRemoteHandwritingActive(false);
+                        if (!mounted) return;
                         setState(() => _showEdit = false);
                         showOptions(context, widget.id, gFFI.dialogManager);
                       },
@@ -678,7 +719,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                     IconButton(
                       color: Colors.white,
                       icon: Icon(Icons.more_vert),
-                      onPressed: () {
+                      onPressed: () async {
+                        await _setRemoteHandwritingActive(false);
+                        if (!mounted) return;
                         setState(() => _showEdit = false);
                         showActions(widget.id);
                       },
@@ -703,6 +746,51 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       !gFFI.canvasModel.cursorEmbedded &&
       !gFFI.inputModel.relativeMouseMode.value;
 
+  // iOS omits 简体中文手写 from the globe menu when autocorrection is off
+  // or the input view rect is empty. The buffer stays invisible and does not
+  // take touches. Android keeps the historical zero-size field.
+  Widget _mobileSoftKeyboardField() {
+    if (!_showEdit) {
+      return const SizedBox(width: 0, height: 0);
+    }
+    final field = TextFormField(
+      textInputAction: TextInputAction.newline,
+      autocorrect: isIOS,
+      // Flutter 3.16.9 Android.
+      // `enableSuggestions: false` causes a secure keyboard to be shown.
+      // https://github.com/flutter/flutter/issues/139143
+      // https://github.com/flutter/flutter/issues/146540
+      // enableSuggestions: false,
+      autofocus: true,
+      focusNode: _mobileFocusNode,
+      maxLines: null,
+      controller: _textController,
+      // trick way to make backspace work always
+      keyboardType: TextInputType.multiline,
+      // `onChanged` may be called depending on the input method if this widget is wrapped in
+      // `Focus(onKeyEvent: ..., child: ...)`
+      // For `Backspace` button in the soft keyboard:
+      // en/fr input method:
+      //      1. The button will not trigger `onKeyEvent` if the text field is not empty.
+      //      2. The button will trigger `onKeyEvent` if the text field is empty.
+      // ko/zh/ja input method: the button will trigger `onKeyEvent`
+      //                     and the event will not popup if `KeyEventResult.handled` is returned.
+      onChanged: handleSoftKeyboardInput,
+    ).workaroundFreezeLinuxMint();
+    if (!isIOS) {
+      return SizedBox(width: 0, height: 0, child: field);
+    }
+    return Positioned(
+      left: 0,
+      bottom: 0,
+      width: 48,
+      height: 32,
+      child: IgnorePointer(
+        child: Opacity(opacity: 0, child: field),
+      ),
+    );
+  }
+
   Widget getBodyForMobile() {
     return Container(
         color: MyTheme.canvasColor,
@@ -722,36 +810,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                       (_showEdit || chatKeyboardRequested),
                   showGestureHelp: _showGestureHelp);
             }),
-            SizedBox(
-              width: 0,
-              height: 0,
-              child: !_showEdit
-                  ? Container()
-                  : TextFormField(
-                      textInputAction: TextInputAction.newline,
-                      autocorrect: false,
-                      // Flutter 3.16.9 Android.
-                      // `enableSuggestions` causes secure keyboard to be shown.
-                      // https://github.com/flutter/flutter/issues/139143
-                      // https://github.com/flutter/flutter/issues/146540
-                      // enableSuggestions: false,
-                      autofocus: true,
-                      focusNode: _mobileFocusNode,
-                      maxLines: null,
-                      controller: _textController,
-                      // trick way to make backspace work always
-                      keyboardType: TextInputType.multiline,
-                      // `onChanged` may be called depending on the input method if this widget is wrapped in
-                      // `Focus(onKeyEvent: ..., child: ...)`
-                      // For `Backspace` button in the soft keyboard:
-                      // en/fr input method:
-                      //      1. The button will not trigger `onKeyEvent` if the text field is not empty.
-                      //      2. The button will trigger `onKeyEvent` if the text field is empty.
-                      // ko/zh/ja input method: the button will trigger `onKeyEvent`
-                      //                     and the event will not popup if `KeyEventResult.handled` is returned.
-                      onChanged: handleSoftKeyboardInput,
-                    ).workaroundFreezeLinuxMint(),
-            ),
+            _mobileSoftKeyboardField(),
           ];
           if (showCursorPaint) {
             paints.add(CursorPaint(widget.id));
@@ -867,6 +926,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   onPressedTextChat(String id, {bool requestSoftKeyboard = true}) {
     if (gFFI.chatModel.chatWindowOverlayEntry == null) {
       setState(() => _showEdit = false);
+      unawaited(_setRemoteHandwritingActive(false));
     }
     gFFI.chatModel.changeCurrentKey(MessageKey(id, ChatModel.clientModeID));
     gFFI.chatModel.toggleChatOverlay(requestSoftKeyboard: requestSoftKeyboard);
