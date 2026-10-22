@@ -346,18 +346,18 @@ fn ui_parent(
                 break;
             }
             Ok(n) => {
+                // sudo writes a message's line break separately; a chunk holding only that
+                // must not replace the message kept for the error dialog.
+                if buf[..n].iter().all(u8::is_ascii_whitespace) {
+                    continue;
+                }
                 saved_output = String::default();
                 let buf = String::from_utf8_lossy(&buf[..n]).trim().to_string();
                 let last_line = buf.lines().last().unwrap_or(&buf).trim().to_string();
                 log::info!("read from child: {}", buf);
 
-                if last_line.starts_with("sudo:") || last_line.starts_with("su:") {
-                    if let Err(e) = tx_to_ui.send(Message::ErrorDialog(last_line)) {
-                        log::error!("Channel error: {e:?}");
-                        kill_child(child);
-                    }
-                    break;
-                } else if last_line.ends_with(":") {
+                // A translated prompt may end with a full-width colon, e.g. zh_CN in su mode.
+                if last_line.ends_with([':', '：']) {
                     match get_echo_turn_off(raw_fd) {
                         Ok(true) => {
                             log::debug!("get_echo_turn_off ok");
@@ -419,6 +419,7 @@ fn ui_parent(
                     if !last_line.is_empty() && initial_password.is_some() {
                         log::error!("received not empty line: {last_line}, clear initial password");
                         initial_password = None;
+                        first = true;
                     }
                 }
             }
@@ -536,8 +537,8 @@ fn child(su_user: Option<String>, args: Vec<String>) -> ResultType<()> {
 }
 
 fn get_echo_turn_off(fd: RawFd) -> Result<bool, Error> {
-    let tios = termios::Termios::from_fd(fd)?;
     for _ in 0..10 {
+        let tios = termios::Termios::from_fd(fd)?;
         if tios.c_lflag & termios::ECHO == 0 {
             return Ok(true);
         }
